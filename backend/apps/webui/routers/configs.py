@@ -1,27 +1,37 @@
-from fastapi import Response, Request
-from fastapi import Depends, FastAPI, HTTPException, status
-from datetime import datetime, timedelta
-from typing import Union
-
-from fastapi import APIRouter
-from pydantic import BaseModel
-import time
-import uuid
-
 from config import BannerModel
+from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel
+from utils.utils import get_admin_user, get_verified_user
 
-from apps.webui.models.users import Users
 
-from utils.utils import (
-    get_password_hash,
-    get_verified_user,
-    get_admin_user,
-    create_token,
-)
-from utils.misc import get_gravatar_url, validate_email_format
-from constants import ERROR_MESSAGES
+from config import get_config, save_config
 
 router = APIRouter()
+
+
+############################
+# ImportConfig
+############################
+
+
+class ImportConfigForm(BaseModel):
+    config: dict
+
+
+@router.post("/import", response_model=dict)
+async def import_config(form_data: ImportConfigForm, user=Depends(get_admin_user)):
+    save_config(form_data.config)
+    return get_config()
+
+
+############################
+# ExportConfig
+############################
+
+
+@router.get("/export", response_model=dict)
+async def export_config(user=Depends(get_admin_user)):
+    return get_config()
 
 
 class SetDefaultModelsForm(BaseModel):

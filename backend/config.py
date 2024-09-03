@@ -1,58 +1,30 @@
-from sqlalchemy import create_engine, Column, Integer, DateTime, JSON, func
-from contextlib import contextmanager
-
-
-import os
-import sys
+import json
 import logging
-import importlib.metadata
-import pkgutil
-from urllib.parse import urlparse
+import os
+import shutil
 from datetime import datetime
+from pathlib import Path
+from typing import Generic, Optional, TypeVar
+from urllib.parse import urlparse
 
 import chromadb
-from chromadb import Settings
-from typing import TypeVar, Generic
-from pydantic import BaseModel
-from typing import Optional
-
-from pathlib import Path
-import json
-import yaml
-
 import requests
-import shutil
-
-
+import yaml
 from apps.webui.internal.db import Base, get_db
-
-from constants import ERROR_MESSAGES
-
+from chromadb import Settings
 from env import (
-    ENV,
-    VERSION,
-    SAFE_MODE,
-    GLOBAL_LOG_LEVEL,
-    SRC_LOG_LEVELS,
-    BASE_DIR,
-    DATA_DIR,
     BACKEND_DIR,
-    FRONTEND_BUILD_DIR,
-    WEBUI_NAME,
-    WEBUI_URL,
-    WEBUI_FAVICON_URL,
-    WEBUI_BUILD_HASH,
     CONFIG_DATA,
-    DATABASE_URL,
-    CHANGELOG,
+    DATA_DIR,
+    ENV,
+    FRONTEND_BUILD_DIR,
     WEBUI_AUTH,
-    WEBUI_AUTH_TRUSTED_EMAIL_HEADER,
-    WEBUI_AUTH_TRUSTED_NAME_HEADER,
-    WEBUI_SECRET_KEY,
-    WEBUI_SESSION_COOKIE_SAME_SITE,
-    WEBUI_SESSION_COOKIE_SECURE,
+    WEBUI_FAVICON_URL,
+    WEBUI_NAME,
     log,
 )
+from pydantic import BaseModel
+from sqlalchemy import JSON, Column, DateTime, Integer, func
 
 
 class EndpointFilter(logging.Filter):
@@ -72,8 +44,8 @@ logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
 def run_migrations():
     print("Running migrations")
     try:
-        from alembic.config import Config
         from alembic import command
+        from alembic.config import Config
 
         alembic_cfg = Config("alembic.ini")
         command.upgrade(alembic_cfg, "head")
@@ -117,15 +89,6 @@ if os.path.exists(f"{DATA_DIR}/config.json"):
     data = load_json_config()
     save_to_db(data)
     os.rename(f"{DATA_DIR}/config.json", f"{DATA_DIR}/old_config.json")
-
-
-def save_config():
-    try:
-        with open(f"{DATA_DIR}/config.json", "w") as f:
-            json.dump(CONFIG_DATA, f, indent="\t")
-    except Exception as e:
-        log.exception(e)
-
 
 DEFAULT_CONFIG = {
     "version": 0,
@@ -200,6 +163,25 @@ def get_config_value(config_path: str):
     return cur_config
 
 
+PERSISTENT_CONFIG_REGISTRY = []
+
+
+def save_config(config):
+    global CONFIG_DATA
+    global PERSISTENT_CONFIG_REGISTRY
+    try:
+        save_to_db(config)
+        CONFIG_DATA = config
+
+        # Trigger updates on all registered PersistentConfig entries
+        for config_item in PERSISTENT_CONFIG_REGISTRY:
+            config_item.update()
+    except Exception as e:
+        log.exception(e)
+        return False
+    return True
+
+
 T = TypeVar("T")
 
 
@@ -214,6 +196,8 @@ class PersistentConfig(Generic[T]):
             self.value = self.config_value
         else:
             self.value = env_value
+
+        PERSISTENT_CONFIG_REGISTRY.append(self)
 
     def __str__(self):
         return str(self.value)
@@ -230,6 +214,12 @@ class PersistentConfig(Generic[T]):
                 "PersistentConfig object cannot be converted to dict, use config_get or .value instead."
             )
         return super().__getattribute__(item)
+
+    def update(self):
+        new_value = get_config_value(self.config_path)
+        if new_value is not None:
+            self.value = new_value
+            log.info(f"Updated {self.env_name} to new value {self.value}")
 
     def save(self):
         log.info(f"Saving '{self.env_name}' to the database")
@@ -1235,6 +1225,18 @@ TAVILY_API_KEY = PersistentConfig(
     "TAVILY_API_KEY",
     "rag.web.search.tavily_api_key",
     os.getenv("TAVILY_API_KEY", ""),
+)
+
+SEARCHAPI_API_KEY = PersistentConfig(
+    "SEARCHAPI_API_KEY",
+    "rag.web.search.searchapi_api_key",
+    os.getenv("SEARCHAPI_API_KEY", ""),
+)
+
+SEARCHAPI_ENGINE = PersistentConfig(
+    "SEARCHAPI_ENGINE",
+    "rag.web.search.searchapi_engine",
+    os.getenv("SEARCHAPI_ENGINE", ""),
 )
 
 RAG_WEB_SEARCH_RESULT_COUNT = PersistentConfig(
